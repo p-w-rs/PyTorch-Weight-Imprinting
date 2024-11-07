@@ -1,0 +1,11 @@
+{
+  "status": "DONE",
+  "references": [
+    {
+      "title": "Low-Shot Learning with Imprinted Weights",
+      "url": "https://arxiv.org/abs/1712.07136",
+      "year": 2017
+    }
+  ],
+  "tags": ["Neural Networks", "Computer Vision", "Python", "PyTorch"]
+}
