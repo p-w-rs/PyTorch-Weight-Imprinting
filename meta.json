@@ -1,4 +1,5 @@
 {
+  "description": "Pytorch implementation of 'Low-Shot Learning with Imprinted Weights', also allows for batched imprinting for better speed",
   "status": "DONE",
   "references": [
     {
