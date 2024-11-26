@@ -1,3 +1,4 @@
+# test.py
 import os
 import random
 import shutil
@@ -10,14 +11,12 @@ from torchvision.transforms import transforms
 from tqdm import tqdm
 from ImprintingMachine import ImprintingMachine
 
-transform = transforms.Compose(
-    [
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ]
-)
+transform = transforms.Compose([
+    transforms.Resize(256),
+    transforms.CenterCrop(224),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+])
 
 model_path = "test_data/mobilenet_l2norm_v3.pt"
 label_path = "test_data/cifar10_labels.txt"
@@ -25,18 +24,10 @@ relabel_path = "test_data/relabel"
 reinforced_relabel_path = "test_data/reinforced_relabel"
 
 dataset = CIFAR10(root="./test_data", train=False, download=True)
-
 testloader = DataLoader(
-    CIFAR10(
-        root="./test_data",
-        train=False,
-        download=True,
-        transform=transform,
-    ),
-    batch_size=512,
-    shuffle=False,
+    CIFAR10(root="./test_data", train=False, download=True, transform=transform),
+    batch_size=512, shuffle=False
 )
-
 
 def reinforce_relabel(machine, relabel_path, reinforced_relabel_path, dataset):
     os.makedirs(reinforced_relabel_path, exist_ok=True)
@@ -62,7 +53,6 @@ def reinforce_relabel(machine, relabel_path, reinforced_relabel_path, dataset):
             target_path = os.path.join(label_dir, image_name)
             image.save(target_path)
 
-
 def test_accuracy(machine, dataloader):
     correct = 0
     total = 0
@@ -75,7 +65,6 @@ def test_accuracy(machine, dataloader):
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
     return correct / total
-
 
 def test_imprinted_accuracy(machine, relabel_path):
     correct_imprinted = 0
@@ -90,7 +79,6 @@ def test_imprinted_accuracy(machine, relabel_path):
             if predicted_label == label:
                 correct_imprinted += 1
     return correct_imprinted / total_imprinted
-
 
 def test_imprinting(machine, relabel_path, testloader, reinforce=False):
     accuracy_before = test_accuracy(machine, testloader)
@@ -116,7 +104,6 @@ def test_imprinting(machine, relabel_path, testloader, reinforce=False):
     accuracy_imprinted = test_imprinted_accuracy(machine, relabel_path)
     print(f"Accuracy after fine-tuning: {accuracy_after:.4f}")
     print(f"Accuracy on imprinted images: {accuracy_imprinted:.4f}")
-
 
 if __name__ == "__main__":
     reinforce_relabel(

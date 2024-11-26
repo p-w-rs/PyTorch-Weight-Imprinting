@@ -1,0 +1,13 @@
+[project]
+name = "pytorch-weight-imprinting"
+version = "0.1.0"
+description = "Pytorch implementation of 'Low-Shot Learning with Imprinted Weights', also allows for batched imprinting for better speed"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "onnx>=1.17.0",
+    "onnxscript>=0.1.0.dev20241126",
+    "torch>=2.5.1",
+    "torchvision>=0.20.1",
+    "tqdm>=4.67.1",
+]

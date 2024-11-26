@@ -1,11 +1,13 @@
+
+# ImprintingMachine.py
 import os
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchvision.models as models
 from torchvision import transforms
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset, ConcatDataset
-
 
 class ImprintingDataset(Dataset):
     def __init__(self, image_dir, transform, label):
@@ -22,21 +24,48 @@ class ImprintingDataset(Dataset):
         image = self.transform(image)
         return image, self.label
 
-
 class ImprintingMachine:
+    class L2Normalize(nn.Module):
+        def __init__(self, dim=1):
+            super().__init__()
+            self.dim = dim
+
+        def forward(self, x):
+            return F.normalize(x, p=2, dim=self.dim)
+
+    class ScaledLinear(nn.Module):
+        def __init__(self, in_features, out_features):
+            super().__init__()
+            self.in_features = in_features
+            self.out_features = out_features
+            self.weight = nn.Parameter(torch.Tensor(out_features, in_features))
+            self.scale = nn.Parameter(torch.Tensor([10.0]))
+            self.reset_parameters()
+
+        def reset_parameters(self):
+            nn.init.xavier_uniform_(self.weight)
+
+        def forward(self, x):
+            normalized_weight = F.normalize(self.weight, p=2, dim=1)
+            return self.scale * F.linear(x, normalized_weight)
+
     def __init__(self, model_path, label_path, relabel_path, batch_size=128):
         self.device = torch.device(
-            "cuda"
-            if torch.cuda.is_available()
-            else "mps" if torch.backends.mps.is_available() else "cpu"
+            "cuda" if torch.cuda.is_available()
+            else "mps" if torch.backends.mps.is_available()
+            else "cpu"
         )
         print(f"Using {self.device} device")
 
-        if model_path is None:
-            self.model = models.mobilenet_v3_large(pretrained=True)
-        else:
-            self.model = torch.load(model_path)
+        import sys
+        sys.modules['__main__'].L2Normalize = self.L2Normalize
+        sys.modules['__main__'].ScaledLinear = self.ScaledLinear
 
+        # Load model with custom pickle mapping
+        self.model = torch.load(
+            model_path,
+            map_location=self.device
+        )
         self.model = self.model.to(self.device)
         self.num_pretrained_classes = self.model.classifier[-1].out_features
         self.model.eval()
@@ -44,7 +73,6 @@ class ImprintingMachine:
         self.labels = self.load_labels(label_path)
         self.relabel_path = relabel_path
         self.batch_size = batch_size
-
         self.transform = self.get_transform()
 
     def get_transform(self):
@@ -95,61 +123,60 @@ class ImprintingMachine:
         if self.relabel_path is None:
             raise ValueError("relabel_path must be provided for imprinting.")
 
-        embeddings = []
-        label_indices = []
+        # Initialize with existing weights
+        class_embeddings = {
+            label: weight.clone() for label, weight in
+            zip(self.labels, self.model.classifier[-1].weight.data)
+        }
+        class_counts = {label: 1 for label in self.labels}
+
+        # Process each label directory
+        label_dirs = [d for d in os.listdir(self.relabel_path)
+                     if os.path.isdir(os.path.join(self.relabel_path, d))]
         datasets = []
+        for label_dir in label_dirs:
+            if label_dir not in self.labels:
+                self.labels.append(label_dir)
 
-        for label in os.listdir(self.relabel_path):
-            label_dir = os.path.join(self.relabel_path, label)
-
-            if not label in self.labels:
-                self.labels.append(label)
             dataset = ImprintingDataset(
-                label_dir, self.transform, self.labels.index(label)
+                os.path.join(self.relabel_path, label_dir),
+                self.transform, label_dir
             )
             datasets.append(dataset)
-            dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False)
+        combined_dataset = ConcatDataset(datasets)
+        dataloader = DataLoader(combined_dataset, batch_size=self.batch_size, shuffle=False)
 
-            label_embeddings = []
-            for images, _ in dataloader:
-                images = images.to(self.device)
-                with torch.no_grad():
-                    embedding = self.model.features(images)
-                    embedding = self.model.avgpool(embedding)
-                    embedding = torch.flatten(embedding, 1)
-                    for layer in self.model.classifier[:-1]:
-                        embedding = layer(embedding)
-                    label_embeddings.append(embedding)
+        # Collect embeddings
+        with torch.no_grad():
+            for inputs, labels in dataloader:
+                inputs = inputs.to(self.device)
+                embeddings = self.model.features(inputs)
+                embeddings = self.model.avgpool(embeddings)
+                embeddings = torch.flatten(embeddings, 1)
+                embeddings = self.model.classifier[:-1](embeddings)
 
-            label_embeddings = torch.cat(label_embeddings, dim=0)
-            label_index = self.labels.index(label)
+                # Accumulate embeddings
+                for emb, label in zip(embeddings, labels):
+                    if label not in class_embeddings:
+                        class_embeddings[label] = emb
+                        class_counts[label] = 1
+                    else:
+                        class_embeddings[label] += emb
+                        class_counts[label] += 1
 
-            if label_index < self.num_pretrained_classes:
-                current_weight = self.model.classifier[-1].weight.data[label_index]
-                label_embeddings = torch.cat(
-                    [label_embeddings, current_weight.unsqueeze(0)], dim=0
-                )
+        # Create new weight matrix
+        weight_matrix = []
+        for label in self.labels:
+            avg_embedding = class_embeddings[label] / class_counts[label]
+            normalized_embedding = F.normalize(avg_embedding, p=2, dim=0)
+            weight_matrix.append(normalized_embedding)
 
-            label_embedding = label_embeddings.mean(dim=0, keepdim=True)
-            label_embedding = nn.functional.normalize(label_embedding, p=2, dim=1)
-            embeddings.append(label_embedding)
-            label_indices.append(label_index)
+        # Update model weights
+        self.model.classifier[-1].weight.data = torch.stack(weight_matrix)
+        self.model.classifier[-1].out_features = len(self.labels)
+        self.num_pretrained_classes = len(self.labels)
 
-        embeddings = torch.cat(embeddings, dim=0)
-
-        num_total_classes = len(self.labels)
-        new_layer = nn.Linear(
-            self.model.classifier[-1].in_features, num_total_classes, bias=False
-        )
-        new_layer = new_layer.to(self.device)
-
-        new_layer.weight.data[: self.num_pretrained_classes] = (
-            self.model.classifier[-1].weight.data[: self.num_pretrained_classes].clone()
-        )
-        new_layer.weight.data[label_indices] = embeddings
-        self.model.classifier[-1] = new_layer
-
-        return ConcatDataset(datasets)
+        return combined_dataset
 
     def fine_tune_model(self, dataset, num_epochs=10, batch_size=32, lr=0.001):
         self.model.train()
@@ -161,10 +188,11 @@ class ImprintingMachine:
         for epoch in range(num_epochs):
             for images, labels in dataloader:
                 images = images.to(self.device)
-                labels = labels.to(self.device)
+                label_indices = torch.tensor([self.labels.index(label) for label in labels],
+                                                      device=self.device)
                 optimizer.zero_grad()
                 logits = self.model(images)
-                loss = criterion(logits, labels)
+                loss = criterion(logits, label_indices)
                 loss.backward()
                 optimizer.step()
 
